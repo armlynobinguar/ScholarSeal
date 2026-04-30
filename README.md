@@ -8,7 +8,7 @@
 
 A 19-year-old nursing student in Cebu City qualifies for a government scholarship but waits 3–5 months for manual disbursement through a barangay official, losing her semester slot because tuition deadlines aren't extended — and she has no receipt, no proof of grant status, and no recourse if funds are misrouted.
 
-## Solution
+## Project Description (Solution)
 
 ScholarSeal lets school admins issue scholarship grants as verifiable on-chain records via Soroban, then automatically release USDC to enrolled students' wallets upon enrollment verification — using Stellar's near-zero fees and 5-second finality to replace slow, opaque manual cash disbursement.
 
@@ -179,9 +179,12 @@ scholar_seal/
 
 ---
 
-## Deployed Contract Link
+## Deployed Contract Details
 [1] https://stellar.expert/explorer/testnet/tx/284007b65cc758f86f1765324a2b0f65099b8f0fac742da1724b2f063aa24ea2
 [2] https://lab.stellar.org/r/testnet/contract/CCTACY7O7DMVHIMBPMP4GHHXFHKAJGUI6GDIGJMIDFCO6ILAPHF7H4J3
+
+## Future Scope 
+The development is still in progress 
 
 ## License
 
