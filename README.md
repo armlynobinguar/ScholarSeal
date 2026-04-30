@@ -181,7 +181,6 @@ scholar_seal/
 
 ## Deployed Contract Details
 [1] https://stellar.expert/explorer/testnet/tx/284007b65cc758f86f1765324a2b0f65099b8f0fac742da1724b2f063aa24ea2
-
 [2] https://lab.stellar.org/r/testnet/contract/CCTACY7O7DMVHIMBPMP4GHHXFHKAJGUI6GDIGJMIDFCO6ILAPHF7H4J3
 
 ## Future Scope 

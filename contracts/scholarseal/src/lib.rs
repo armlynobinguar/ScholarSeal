@@ -1,53 +1,54 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short,
+    contract, contractimpl, contracttype, contracterror,
     token, Address, Env, String, Symbol,
 };
 
-// ─────────────────────────────────────────────
-// Storage Key Types
-// ─────────────────────────────────────────────
+#[contracterror]
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum Error {
+    NotInitialized         = 1,
+    AlreadyInitialized     = 2,
+    Unauthorized           = 3,
+    GrantNotFound          = 4,
+    GrantAlreadyExists     = 5,
+    GrantAlreadyClaimed    = 6,
+    InsufficientEscrow     = 7,
+    GwaNotMet              = 8,
+    EnrollmentHashMismatch = 9,
+    WrongRecipient         = 10,
+}
 
-/// Identifies a stored grant by student ID string
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
-    Grant(String),      // student_id → GrantRecord
-    Admin,              // → Address (contract administrator)
-    TokenId,            // → Address (USDC token contract)
-    EscrowBalance,      // → i128 (total USDC deposited by admin)
+    Grant(String),
+    Admin,
+    TokenId,
+    EscrowBalance,
 }
 
-// ─────────────────────────────────────────────
-// Data Structures
-// ─────────────────────────────────────────────
-
-/// The full lifecycle record of a single scholarship grant
 #[contracttype]
 #[derive(Clone)]
 pub struct GrantRecord {
-    /// Unique identifier for the student (e.g. student ID number)
+    /// Unique student identifier e.g. "STU-2024-00142"
     pub student_id: String,
     /// Stellar wallet address that will receive USDC
     pub student_wallet: Address,
-    /// USDC amount in stroops (7 decimal places: 10_000_000 = 1 USDC)
+    /// USDC amount in stroops (10_000_000 = 1 USDC)
     pub amount: i128,
-    /// Enrollment verification hash (SHA-256 of enrollment doc, hex string)
+    /// SHA-256 hex string of the student's enrollment PDF
     pub enrollment_hash: String,
-    /// Semester label this grant is valid for, e.g. "2024-2S"
+    /// Semester label e.g. "2024-2S"
     pub semester: String,
-    /// Whether the student has already claimed this grant
+    /// True once the student has claimed and received USDC
     pub claimed: bool,
-    /// Minimum GWA (grade-weighted average × 100) required; 0 = no requirement
+    /// Minimum GWA x100 required (0 = no requirement). Philippine scale: lower = better.
     pub min_gwa: u32,
-    /// Student's GWA × 100 as submitted by admin (e.g. 175 = 1.75 GWA)
+    /// Student's actual GWA x100 e.g. 175 means 1.75
     pub student_gwa: u32,
 }
-
-// ─────────────────────────────────────────────
-// Contract
-// ─────────────────────────────────────────────
 
 #[contract]
 pub struct ScholarSealContract;
@@ -55,49 +56,40 @@ pub struct ScholarSealContract;
 #[contractimpl]
 impl ScholarSealContract {
 
-    // ─── INITIALIZATION ───────────────────────
-
-    /// Initialize the contract with an admin address and the USDC token contract address.
-    /// Must be called once before any other function.
-    pub fn initialize(env: Env, admin: Address, token_id: Address) {
-        // Prevent re-initialization
+    pub fn initialize(env: Env, admin: Address, token_id: Address) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
+            return Err(Error::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::TokenId, &token_id);
         env.storage().instance().set(&DataKey::EscrowBalance, &0_i128);
+        Ok(())
     }
 
-    // ─── ADMIN: FUND ESCROW ───────────────────
+    pub fn fund_escrow(env: Env, admin: Address, amount: i128) -> Result<(), Error> {
+        let stored_admin: Address = env
+            .storage().instance().get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
 
-    /// Admin deposits USDC into the contract's escrow pool.
-    /// This must be called before creating any grants — the contract
-    /// will not create grants it cannot pay.
-    pub fn fund_escrow(env: Env, admin: Address, amount: i128) {
-        // Verify caller is the registered admin
-        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
         if admin != stored_admin {
-            panic!("unauthorized: only admin can fund escrow");
+            return Err(Error::Unauthorized);
         }
 
-        // Transfer USDC from admin wallet to this contract
-        let token_id: Address = env.storage().instance().get(&DataKey::TokenId).unwrap();
+        let token_id: Address = env
+            .storage().instance().get(&DataKey::TokenId)
+            .ok_or(Error::NotInitialized)?;
+
         let token_client = token::Client::new(&env, &token_id);
         token_client.transfer(&admin, &env.current_contract_address(), &amount);
 
-        // Update internal escrow balance tracker
-        let current: i128 = env.storage().instance().get(&DataKey::EscrowBalance).unwrap();
+        let current: i128 = env
+            .storage().instance().get(&DataKey::EscrowBalance)
+            .unwrap_or(0);
         env.storage().instance().set(&DataKey::EscrowBalance, &(current + amount));
+        Ok(())
     }
 
-    // ─── ADMIN: CREATE GRANT ──────────────────
-
-    /// Admin registers a scholarship grant for a specific student.
-    /// The student_id must be unique — one grant per student per call.
-    /// enrollment_hash is a hex string of the SHA-256 of their enrollment PDF.
-    /// min_gwa and student_gwa use integer × 100 encoding (e.g. 1.75 GWA → 175).
     pub fn create_grant(
         env: Env,
         admin: Address,
@@ -108,34 +100,34 @@ impl ScholarSealContract {
         semester: String,
         min_gwa: u32,
         student_gwa: u32,
-    ) {
-        // Only admin may create grants
-        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+    ) -> Result<(), Error> {
+        let stored_admin: Address = env
+            .storage().instance().get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+
         admin.require_auth();
         if admin != stored_admin {
-            panic!("unauthorized: only admin can create grants");
+            return Err(Error::Unauthorized);
         }
 
-        // Prevent duplicate grants for the same student_id
         let key = DataKey::Grant(student_id.clone());
         if env.storage().persistent().has(&key) {
-            panic!("grant already exists for this student_id");
+            return Err(Error::GrantAlreadyExists);
         }
 
-        // Ensure escrow has enough funds to cover this grant
-        let escrow: i128 = env.storage().instance().get(&DataKey::EscrowBalance).unwrap();
+        let escrow: i128 = env
+            .storage().instance().get(&DataKey::EscrowBalance)
+            .unwrap_or(0);
         if escrow < amount {
-            panic!("insufficient escrow balance to fund this grant");
+            return Err(Error::InsufficientEscrow);
         }
 
-        // Check GWA eligibility — if min_gwa > 0, student must meet or beat it
-        // Lower GWA number = better grade in Philippine grading (1.0 is highest)
-        // So student_gwa must be <= min_gwa (e.g. student 175 <= required 200 ✓)
+        // Philippine grading: lower number = better. 1.75 beats 2.00.
+        // student_gwa must be <= min_gwa to qualify.
         if min_gwa > 0 && student_gwa > min_gwa {
-            panic!("student does not meet minimum GWA requirement");
+            return Err(Error::GwaNotMet);
         }
 
-        // Store the grant record in persistent storage
         let record = GrantRecord {
             student_id: student_id.clone(),
             student_wallet,
@@ -148,66 +140,60 @@ impl ScholarSealContract {
         };
         env.storage().persistent().set(&key, &record);
 
-        // Emit an event so the frontend can update in real-time
         env.events().publish(
             (Symbol::new(&env, "grant_created"), student_id),
             amount,
         );
+        Ok(())
     }
 
-    // ─── STUDENT: CLAIM GRANT ─────────────────
-
-    /// Student calls this to claim their scholarship disbursement.
-    /// The contract verifies:
-    ///   1. The grant exists for this student_id
-    ///   2. The grant has not already been claimed
-    ///   3. The caller IS the registered student wallet (auth check)
-    ///   4. The submitted enrollment_hash matches the one stored by admin
-    /// On success, USDC is transferred from contract escrow to student wallet.
     pub fn claim_grant(
         env: Env,
         student_wallet: Address,
         student_id: String,
         enrollment_hash: String,
-    ) {
-        // Require the student's wallet to sign this transaction
+    ) -> Result<(), Error> {
         student_wallet.require_auth();
 
-        // Load the grant record
         let key = DataKey::Grant(student_id.clone());
+
+        // Check existence BEFORE get — calling .get() on a missing key
+        // causes UnreachableCodeReached in Soroban Wasm
+        if !env.storage().persistent().has(&key) {
+            return Err(Error::GrantNotFound);
+        }
+
         let mut record: GrantRecord = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| panic!("no grant found for this student_id"));
+            .storage().persistent().get(&key)
+            .ok_or(Error::GrantNotFound)?;
 
-        // Prevent double-claiming
         if record.claimed {
-            panic!("grant already claimed");
+            return Err(Error::GrantAlreadyClaimed);
         }
 
-        // Verify the caller is the designated recipient
         if student_wallet != record.student_wallet {
-            panic!("unauthorized: caller is not the grant recipient");
+            return Err(Error::WrongRecipient);
         }
 
-        // Verify enrollment hash matches what admin submitted
         if enrollment_hash != record.enrollment_hash {
-            panic!("enrollment verification failed: hash mismatch");
+            return Err(Error::EnrollmentHashMismatch);
         }
 
-        // Mark as claimed before transferring (checks-effects-interactions pattern)
+        // Mark claimed before transfer (checks-effects-interactions)
         record.claimed = true;
         env.storage().persistent().set(&key, &record);
 
-        // Deduct from escrow balance tracker
-        let escrow: i128 = env.storage().instance().get(&DataKey::EscrowBalance).unwrap();
+        let escrow: i128 = env
+            .storage().instance().get(&DataKey::EscrowBalance)
+            .unwrap_or(0);
         env.storage()
             .instance()
             .set(&DataKey::EscrowBalance, &(escrow - record.amount));
 
-        // Transfer USDC from this contract to the student's wallet
-        let token_id: Address = env.storage().instance().get(&DataKey::TokenId).unwrap();
+        let token_id: Address = env
+            .storage().instance().get(&DataKey::TokenId)
+            .ok_or(Error::NotInitialized)?;
+
         let token_client = token::Client::new(&env, &token_id);
         token_client.transfer(
             &env.current_contract_address(),
@@ -215,26 +201,23 @@ impl ScholarSealContract {
             &record.amount,
         );
 
-        // Emit disbursement event for dashboard listeners
         env.events().publish(
             (Symbol::new(&env, "grant_claimed"), student_id),
             record.amount,
         );
+        Ok(())
     }
 
-    // ─── VIEW FUNCTIONS ───────────────────────
-
-    /// Returns the full grant record for a given student_id.
-    /// Useful for the frontend to show grant status without a transaction.
-    pub fn get_grant(env: Env, student_id: String) -> GrantRecord {
+    /// Returns the grant record, or Error::GrantNotFound if student_id doesn't exist.
+    /// Student IDs use format: STU-YYYY-NNNNN  e.g. STU-2024-00142
+    pub fn get_grant(env: Env, student_id: String) -> Result<GrantRecord, Error> {
         let key = DataKey::Grant(student_id);
-        env.storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or_else(|| panic!("no grant found"))
+        if !env.storage().persistent().has(&key) {
+            return Err(Error::GrantNotFound);
+        }
+        env.storage().persistent().get(&key).ok_or(Error::GrantNotFound)
     }
 
-    /// Returns the current USDC escrow balance held by this contract.
     pub fn get_escrow_balance(env: Env) -> i128 {
         env.storage()
             .instance()
@@ -242,9 +225,11 @@ impl ScholarSealContract {
             .unwrap_or(0)
     }
 
-    /// Returns the registered admin address.
-    pub fn get_admin(env: Env) -> Address {
-        env.storage().instance().get(&DataKey::Admin).unwrap()
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)
     }
 }
 
